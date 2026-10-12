@@ -1,4 +1,4 @@
-name: Proton Cloudphone Deployment (STANDALONE)
+name: Proton Cloudphone Deployment (DASHBOARD)
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
     - name: Preflight Environment Check
       run: |
         echo "======================================================"
-        echo "   PROTON CLOUDPHONE // STANDALONE // ANDROID 16"
+        echo "   PROTON CLOUDPHONE // DASHBOARD // ANDROID 16"
         echo "======================================================="
         echo "[INFO] Arch : $(uname -m)"
         echo "[INFO] OS   : $(lsb_release -ds 2>/dev/null || head -1 /etc/os-release)"
@@ -87,12 +87,12 @@ jobs:
         echo "REF_SHA=$REF_SHA" >> $GITHUB_ENV
         echo "[OK] Pinned source commit: $REF_SHA"
 
-    - name: Install Cloudphone Platform (STANDALONE Mode)
+    - name: Install Cloudphone Platform (DASHBOARD Mode)
       run: |
-        echo "[INFO] Running installer: mode=cloudphone port=8790 ref=$REF_SHA"
+        echo "[INFO] Running installer: mode=dashboard port=8790 ref=$REF_SHA"
         echo "[INFO] First run downloads pinned Android 16 (API 36) SDK artifacts (~3-5 GB)..."
-        sudo bash /tmp/cloudphone-bootstrap.sh --ref "$REF_SHA" --mode cloudphone --port 8790 --accept-host-changes --accept-android-sdk-license
-        echo "[SUCCESS] Cloudphone Platform installed in STANDALONE mode."
+        sudo bash /tmp/cloudphone-bootstrap.sh --ref "$REF_SHA" --mode dashboard --port 8790 --accept-host-changes --accept-android-sdk-license
+        echo "[SUCCESS] Cloudphone Platform installed in DASHBOARD mode."
 
     - name: Locate Generated Admin Credentials
       run: |
@@ -143,15 +143,15 @@ jobs:
     - name: Output Connection Details
       run: |
         echo "======================================================"
-        echo "        PROTON CLOUDPHONE STANDALONE IS LIVE"
+        echo "        PROTON CLOUDPHONE DASHBOARD IS LIVE"
         echo "======================================================="
         echo "Access URL : $TUNNEL_URL"
-        echo "Mode       : cloudphone"
+        echo "Mode       : dashboard"
         echo "Web Port   : 8790 (loopback, proxied via tunnel)"
         echo "Login      : installer-generated admin username/password (see install log)"
         echo "Phone Keys : admin-only reveal per phone (dashboard mode)"
         echo "======================================================="
-        echo "### Proton Cloudphone // STANDALONE" >> $GITHUB_STEP_SUMMARY
+        echo "### Proton Cloudphone // DASHBOARD" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**OPEN CLOUDPHONE: $TUNNEL_URL**" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -159,14 +159,14 @@ jobs:
         echo "|---|---|" >> $GITHUB_STEP_SUMMARY
         echo "| Platform | Android 16 (API 36) KVM emulator |" >> $GITHUB_STEP_SUMMARY
         echo "| Transport | scrcpy H.264 over authenticated WSS |" >> $GITHUB_STEP_SUMMARY
-        echo "| Mode | cloudphone |" >> $GITHUB_STEP_SUMMARY
+        echo "| Mode | dashboard |" >> $GITHUB_STEP_SUMMARY
         echo "| Web Port | 8790 (loopback) |" >> $GITHUB_STEP_SUMMARY
         echo "| Tunnel | Cloudflare Quick Tunnel |" >> $GITHUB_STEP_SUMMARY
-        echo "::notice title=Cloudphone STANDALONE is LIVE::$TUNNEL_URL"
+        echo "::notice title=Cloudphone DASHBOARD is LIVE::$TUNNEL_URL"
 
     - name: Keep Alive Monitor
       run: |
-        echo "[INFO] Cloudphone STANDALONE session active for 6 hours max..."
+        echo "[INFO] Cloudphone DASHBOARD session active for 6 hours max..."
         echo "[INFO] Live URL: $TUNNEL_URL"
         for i in {355..1}; do
           sleep 60
