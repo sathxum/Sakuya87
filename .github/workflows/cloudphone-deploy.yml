@@ -1,0 +1,173 @@
+name: Proton Cloudphone Deployment (STANDALONE)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '.github/workflows/cloudphone-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    # Pinned to 24.04: platform strictly requires Ubuntu 22.04/24.04 and the
+    # ubuntu-latest label migrates to Ubuntu 26.04 on 2026-10-19.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+    - name: Preflight Environment Check
+      run: |
+        echo "======================================================"
+        echo "   PROTON CLOUDPHONE // STANDALONE // ANDROID 16"
+        echo "======================================================="
+        echo "[INFO] Arch : $(uname -m)"
+        echo "[INFO] OS   : $(lsb_release -ds 2>/dev/null || head -1 /etc/os-release)"
+        echo "[INFO] PID1 : $(cat /proc/1/comm)"
+        if [ -e /dev/kvm ]; then
+          echo "[OK] KVM acceleration device present."
+        else
+          echo "[WARN] /dev/kvm not present - phone creation may be rejected by the platform."
+        fi
+        echo "[INFO] Disk space:"
+        df -h / /opt /var/lib 2>/dev/null || df -h /
+        echo "[INFO] Node: $(node --version 2>/dev/null || echo 'not found')"
+
+    - name: Free Runner Disk Space (50 GiB Preflight Requirement)
+      run: |
+        echo "[INFO] Disk before cleanup:"
+        df -h / | tail -1
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup 2>/dev/null || true
+        sudo rm -rf /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go /opt/hostedtoolcache/PyPy /opt/hostedtoolcache/Ruby 2>/dev/null || true
+        sudo docker image prune -a -f >/dev/null 2>&1 || true
+        echo "[INFO] Disk after cleanup:"
+        df -h / | tail -1
+
+    - name: Normalize Runner Host (secure_path Compliance)
+      run: |
+        echo "[INFO] GitHub hosted runners ship /usr/local/bin as world-writable (mode 0777)."
+        echo "[INFO] The platform installer enforces root-owned, non-group-writable PATH dirs"
+        echo "[INFO] via secure_path() and exits 1 on: Group/other writable: /usr/local/bin"
+        ls -ld /usr/local /usr/local/bin /opt /srv 2>/dev/null || true
+        sudo chown root:root /usr/local /usr/local/bin 2>/dev/null || true
+        sudo chmod 0755 /usr/local /usr/local/bin 2>/dev/null || true
+        FAIL=0
+        for P in /usr/local /usr/local/bin /opt /usr/bin /srv; do
+          OWN=$(stat -c %u "$P" 2>/dev/null || echo MISSING)
+          WRITABLE=$(find "$P" -maxdepth 0 -perm /022 -print 2>/dev/null)
+          if [ "$OWN" != "0" ] || [ -n "$WRITABLE" ]; then
+            echo "[ERROR] $P not secure_path compliant (owner=$OWN, writable=$WRITABLE)"
+            FAIL=1
+          else
+            echo "[OK] $P root-owned and not group/other-writable"
+          fi
+        done
+        if [ "$FAIL" != "0" ]; then
+          echo "[ERROR] Host normalization failed - installer secure_path would reject this host."
+          exit 1
+        fi
+        echo "[OK] Runner host normalized - installer secure_path checks will pass."
+
+    - name: Download Official Bootstrap (Checksum-Pinned Installer)
+      run: |
+        echo "[INFO] Downloading bootstrap.sh from Silence-X-Proton/cloudphone-platform..."
+        curl --fail --show-error --silent --location --proto "=https" --tlsv1.2 \
+          https://raw.githubusercontent.com/Silence-X-Proton/cloudphone-platform/main/scripts/bootstrap.sh \
+          -o /tmp/cloudphone-bootstrap.sh
+        bash -n /tmp/cloudphone-bootstrap.sh && echo "[OK] Bootstrap syntax verified."
+        sudo chmod +x /tmp/cloudphone-bootstrap.sh
+
+    - name: Resolve Source Commit (Rate-Limit Safe)
+      run: |
+        REF_SHA=""
+        if [ -z "$REF_SHA" ]; then
+          echo "[INFO] Resolving latest public HEAD via git protocol (bypasses api.github.com rate limits)..."
+          REF_SHA=$(git ls-remote https://github.com/Silence-X-Proton/cloudphone-platform.git HEAD | awk '{print $1}')
+        fi
+        echo "$REF_SHA" | grep -qE '^[0-9a-f]{40}$' || { echo "[ERROR] Could not resolve a valid 40-char commit SHA (got: $REF_SHA)"; exit 1; }
+        echo "REF_SHA=$REF_SHA" >> $GITHUB_ENV
+        echo "[OK] Pinned source commit: $REF_SHA"
+
+    - name: Install Cloudphone Platform (STANDALONE Mode)
+      run: |
+        echo "[INFO] Running installer: mode=cloudphone port=8790 ref=$REF_SHA"
+        echo "[INFO] First run downloads pinned Android 16 (API 36) SDK artifacts (~3-5 GB)..."
+        sudo bash /tmp/cloudphone-bootstrap.sh --ref "$REF_SHA" --mode cloudphone --port 8790 --accept-host-changes --accept-android-sdk-license
+        echo "[SUCCESS] Cloudphone Platform installed in STANDALONE mode."
+
+    - name: Locate Generated Admin Credentials
+      run: |
+        echo "[INFO] Installer-generated admin username/password are printed above in the install log."
+        echo "[INFO] Recovering root-only credential records (best effort)..."
+        STATE_DIR=/var/lib/cloudphone-platform
+        if sudo [ -d "$STATE_DIR" ]; then
+          for f in $(sudo find "$STATE_DIR" -maxdepth 3 -type f \( -iname '*credential*' -o -iname '*admin*' -o -iname '*auth*' \) 2>/dev/null | head -5); do
+            echo "--- $f ---"
+            sudo cat "$f" 2>/dev/null || true
+          done
+        else
+          echo "[WARN] State directory $STATE_DIR not found (credentials may live elsewhere)."
+        fi
+
+    - name: Install Tunnel Protocol
+      run: |
+        if ! command -v cloudflared >/dev/null 2>&1; then
+          echo "[INFO] Downloading cloudflared..."
+          sudo curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+        fi
+
+    - name: Start Assigned Tunnel
+      run: |
+        echo "[INFO] Starting Cloudflare Quick Tunnel on port 8790..."
+        if ! command -v cloudflared >/dev/null 2>&1; then
+          echo "[WARN] cloudflared missing - re-downloading..."
+          sudo curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+        fi
+        nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8790 > /tmp/tunnel.log 2>&1 &
+        TUNNEL_URL=""
+        for i in $(seq 1 60); do
+          sleep 2
+          TUNNEL_URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/tunnel.log | head -1 || true)
+          if [ -n "$TUNNEL_URL" ]; then
+            echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+            break
+          fi
+        done
+        if [ -z "$TUNNEL_URL" ]; then
+          echo "[ERROR] Tunnel could not be established. Tunnel log:"
+          cat /tmp/tunnel.log 2>/dev/null || true
+          exit 1
+        fi
+
+    - name: Output Connection Details
+      run: |
+        echo "======================================================"
+        echo "        PROTON CLOUDPHONE STANDALONE IS LIVE"
+        echo "======================================================="
+        echo "Access URL : $TUNNEL_URL"
+        echo "Mode       : cloudphone"
+        echo "Web Port   : 8790 (loopback, proxied via tunnel)"
+        echo "Login      : installer-generated admin username/password (see install log)"
+        echo "Phone Keys : admin-only reveal per phone (dashboard mode)"
+        echo "======================================================="
+        echo "### Proton Cloudphone // STANDALONE" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**OPEN CLOUDPHONE: $TUNNEL_URL**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+        echo "| Platform | Android 16 (API 36) KVM emulator |" >> $GITHUB_STEP_SUMMARY
+        echo "| Transport | scrcpy H.264 over authenticated WSS |" >> $GITHUB_STEP_SUMMARY
+        echo "| Mode | cloudphone |" >> $GITHUB_STEP_SUMMARY
+        echo "| Web Port | 8790 (loopback) |" >> $GITHUB_STEP_SUMMARY
+        echo "| Tunnel | Cloudflare Quick Tunnel |" >> $GITHUB_STEP_SUMMARY
+        echo "::notice title=Cloudphone STANDALONE is LIVE::$TUNNEL_URL"
+
+    - name: Keep Alive Monitor
+      run: |
+        echo "[INFO] Cloudphone STANDALONE session active for 6 hours max..."
+        echo "[INFO] Live URL: $TUNNEL_URL"
+        for i in {355..1}; do
+          sleep 60
+        done
